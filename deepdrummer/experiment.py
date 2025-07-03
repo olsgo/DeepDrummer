@@ -40,6 +40,12 @@ class Experiment:
     ):
         assert phase1_count % save_interval == 0
 
+        if torch.backends.mps.is_available():
+            self.device = torch.device("mps")
+        else:
+            self.device = torch.device("cpu")
+        print(f"Using device: {self.device}")
+
         # Training parameters
         self.train_batches = train_batches
         self.batch_size = batch_size
@@ -104,8 +110,7 @@ class Experiment:
             p_dropout=self.dropout
         )
 
-        if torch.cuda.is_available():
-            model.cuda()
+        model.to(self.device)
 
         # If we should copy the parameters from another model
         if copy_model is not None:
