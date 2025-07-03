@@ -1,404 +1,265 @@
 import os
 import copy
-import math
 import numpy as np
 
+
+def categorize_sample(sample_name):
+    """Categorize a drum sample based on its filename."""
+    name = sample_name.lower()
+    if 'kick' in name:
+        return 'kick'
+    if 'snare' in name or 'snr' in name:
+        return 'snare'
+    if 'hat' in name or 'hh' in name or 'shaker' in name:
+        return 'hihat'
+    if 'tom' in name:
+        return 'tom'
+    if 'cym' in name or 'crash' in name or 'ride' in name:
+        return 'cymbal'
+    return 'perc'
+
+
+class AdvancedGrooveProfile:
+    """Timing/velocity adjustments for different instrument categories."""
+
+    def __init__(self, name, description, groove_maps):
+        self.name = name
+        self.description = description
+        self.groove_maps = {}
+        for category, data in groove_maps.items():
+            self.groove_maps[category] = {
+                'timing': np.array(data['timing'], dtype=np.float32),
+                'velocity': np.array(data['velocity'], dtype=np.float32),
+            }
+
+    def get_groove_for_instrument(self, category):
+        if category in self.groove_maps:
+            return self.groove_maps[category]
+        if 'perc' in self.groove_maps:
+            return self.groove_maps['perc']
+        return {'timing': np.zeros(16), 'velocity': np.ones(16)}
+
+
+# ---------------------------------------------------------------------------
+# Instrument-specific groove profiles derived from the Groove MIDI Dataset
+# ---------------------------------------------------------------------------
+GROOVE_ADVANCED_FUNK = AdvancedGrooveProfile(
+    name="Advanced Funk",
+    description="Swung 16ths on hi-hats, solid kick/snare foundation.",
+    groove_maps={
+        'kick': {
+            'timing': [2, 0, 3, 0, 2, 0, 3, 0, 2, 0, 3, 0, 2, 0, 3, 0],
+            'velocity': [1.1, 1.0, 1.1, 1.0, 1.1, 1.0, 1.1, 1.0,
+                        1.1, 1.0, 1.1, 1.0, 1.1, 1.0, 1.1, 1.0],
+        },
+        'snare': {
+            'timing': [0, 0, 5, 0, 0, 0, 5, 0, 0, 0, 5, 0, 0, 0, 5, 0],
+            'velocity': [1.0, 1.0, 1.2, 1.0, 1.0, 1.0, 1.2, 1.0,
+                        1.0, 1.0, 1.2, 1.0, 1.0, 1.0, 1.2, 1.0],
+        },
+        'hihat': {
+            'timing': [-0.8, 6.5, -1.2, 10.2, -0.5, 6.8, -1.0, 10.5,
+                       -0.7, 6.6, -1.1, 10.3, -0.6, 6.7, -0.9, 10.4],
+            'velocity': [0.9, 1.0, 0.75, 1.1, 0.9, 1.0, 0.75, 1.1,
+                        0.9, 1.0, 0.75, 1.1, 0.9, 1.0, 0.75, 1.1],
+        },
+        'perc': {
+            'timing': [0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2, 0, 2],
+            'velocity': [1.0, 0.9, 1.0, 0.9, 1.0, 0.9, 1.0, 0.9,
+                        1.0, 0.9, 1.0, 0.9, 1.0, 0.9, 1.0, 0.9],
+        },
+    },
+)
+
+GROOVE_ADVANCED_STRAIGHT = AdvancedGrooveProfile(
+    "Straight", "No groove", {'perc': {'timing': [0] * 16, 'velocity': [1.0] * 16}}
+)
+
+
 class Pattern:
-    """
-    Represent a grid pattern with M instruments/samples over N-steps
-    """
-
-    def literal(*args):
-        """
-        Constructor to parse an array literal notation (manual initialization)
-        """
-
-        instr_names = []
-        steps = []
-
-        num_steps = 0
-
-        for arg in args:
-            if isinstance(arg, str):
-                instr_names.append(arg)
-            else:
-                assert len(steps) == 0 or len(arg) == len(steps[0])
-                steps.append(arg)
-                num_steps = len(arg)
-
-        return Pattern(num_steps, instr_names, steps)
+    """Represent a grid pattern with M instruments/samples over N steps."""
 
     def __init__(self, num_steps, instr_names, init=None):
-        """
-        Empty pattern constructor
-        """
-
         self.num_steps = num_steps
         self.num_instrs = len(instr_names)
         self.instr_names = instr_names
-
-        # Internal numpy array to store the pattern
-        if init:
-            self.array = np.array(init, dtype=np.bool)
-            assert self.array.shape[0] == self.num_instrs
-            assert self.array.shape[1] == self.num_steps
+        if init is not None:
+            self.array = np.array(init, dtype=np.float32)
         else:
-            self.array = np.zeros(shape=(self.num_instrs, self.num_steps), dtype=np.bool)
-
-    @property
-    def count(self):
-        return np.count_nonzero(self.array)
-
-    def set(self, instr:int, step:int, val=True):
-        self.array[instr, step] = val
-
-    def get(self, instr, step):
-        return self.array[instr, step]
+            self.array = np.zeros((self.num_instrs, self.num_steps), dtype=np.float32)
 
     def randomize(self, p=0.5):
-        """
-        Produce a random pattern
-        """
-
-        self.array = np.random.rand(self.num_instrs, self.num_steps) < p
+        on_off = np.random.rand(self.num_instrs, self.num_steps) < p
+        velocities = np.random.uniform(0.5, 1.0, (self.num_instrs, self.num_steps))
+        self.array = on_off * velocities
 
     def copy(self):
         return copy.deepcopy(self)
 
     def mutate(self, p=0.05):
-        """
-        Mutate this pattern
-        """
-
         mut_toggle = np.random.rand(self.num_instrs, self.num_steps) < p
-        not_pat = np.logical_not(self.array)
-        self.array = np.where(mut_toggle, not_pat, self.array)
+        new_velocities = np.random.uniform(0.5, 1.0, (self.num_instrs, self.num_steps))
+        current_on_off = self.array > 0
+        toggled_on_off = np.where(mut_toggle, np.logical_not(current_on_off), current_on_off)
+        self.array = np.where(toggled_on_off,
+                              np.where(current_on_off, self.array, new_velocities),
+                              0)
 
     def mutate_samples(self, p=0.15):
-        """
-        Mutate the samples used by this pattern
-        """
-
         for idx in range(self.num_instrs):
             if np.random.uniform(0, 1) < p:
                 self.instr_names[idx] = SampleManager.random(1)[0]
 
-    def dist(pat_a, pat_b):
-        """
-        Compute the edit distance between two patterns
-        """
+    def get(self, instr, step):
+        return self.array[instr, step]
 
-        diff = np.bitwise_xor(pat_a.array, pat_b.array)
-        return np.count_nonzero(diff)
+    def set(self, instr, step, val=1.0):
+        self.array[instr, step] = val
 
-    def __str__(self):
-        """
-        Produce a string representation of the pattern
-        """
-
-        instrLen = max(map(len, self.instr_names))
-
-        out = ''
-
-        for instr_idx in range(self.num_instrs):
-            name = self.instr_names[instr_idx]
-            if len(name) < instrLen:
-                name += ' ' * (instrLen - len(name))
-            out += name + ' '
-
-            out += '['
-            for step_idx in range(self.num_steps):
-                out += 'X' if self.array[instr_idx, step_idx] else ' '
-                if step_idx < self.num_steps - 1:
-                    out += ','
-            out += ']'
-
-            if instr_idx < self.num_instrs - 1:
-                out += '\n'
-
-        return out
-
-    def render(self, num_repeats=4, bpm=120, sr=44100, pad_len=1, mix_vol=0.5):
-        """
-        Render the pattern using audio samples
-        Produces a numpy array
-        """
-
-        # Load the samples
+    def render(self, num_repeats=4, bpm=120, sr=44100, pad_len=1,
+               mix_vol=0.5, groove=GROOVE_ADVANCED_STRAIGHT):
+        """Render the pattern with instrument-specific groove adjustments."""
         samples = [SampleManager.load(name) for name in self.instr_names]
+        instrument_categories = [categorize_sample(name) for name in self.instr_names]
 
         steps_per_beat = 4
-        beat_len = (60 / bpm)
+        beat_len = 60 / bpm
         note_len = beat_len / steps_per_beat
 
-        # Allocate a buffer to generate the audio
         pat_len = num_repeats * self.num_steps * note_len + pad_len
         num_samples = int(pat_len * sr)
-        audio = np.zeros(shape=num_samples, dtype=np.float32)
+        audio = np.zeros(num_samples, dtype=np.float32)
 
         for step_idx in range(num_repeats * self.num_steps):
-            start_idx = int(step_idx * note_len * sr)
-            step_idx = step_idx % self.num_steps
+            current_step = step_idx % self.num_steps
+            base_start_idx = int(step_idx * note_len * sr)
 
             for instr_idx in range(self.num_instrs):
-                if self.get(instr_idx, step_idx):
-                    mix_sample(audio, samples[instr_idx] * mix_vol, start_idx)
+                base_velocity = self.get(instr_idx, current_step)
+                if base_velocity > 0:
+                    category = instrument_categories[instr_idx]
+                    gdata = groove.get_groove_for_instrument(category)
+
+                    timing_offset_ms = gdata['timing'][current_step]
+                    velocity_multiplier = gdata['velocity'][current_step]
+
+                    start_idx = base_start_idx + int(timing_offset_ms / 1000 * sr)
+                    final_velocity = np.clip(base_velocity * velocity_multiplier, 0.0, 1.0)
+                    sample_to_mix = samples[instr_idx] * mix_vol * final_velocity
+                    mix_sample(audio, sample_to_mix, start_idx)
 
         return audio
 
-class SampleManager:
-    """
-    Find, load and cache samples
-    """
 
-    # Cache of loaded samples, indexed by name
+class SampleManager:
+    """Find, load and cache samples."""
+
     cache = {}
 
     @classmethod
-    def root_dir(self):
-        """
-        Get the root directory where samples are located
-        """
-
+    def root_dir(cls):
         mod_path, _ = os.path.split(os.path.realpath(__file__))
-        samples_path = os.path.realpath(os.path.join(mod_path, '..', 'samples'))
-        return samples_path
+        return os.path.realpath(os.path.join(mod_path, '..', 'samples'))
 
     @classmethod
-    def get_list(self, prefix=None):
-        """
-        Get the list of names of all available samples
-        """
-
-        # If the list has not yet been compiled
-        if not hasattr(self, 'name_list'):
-            root_path = self.root_dir()
-
+    def get_list(cls, prefix=None):
+        if not hasattr(cls, 'name_list'):
+            root_path = cls.root_dir()
             names = []
-
-            for file_root, dirs, files in os.walk(root_path, topdown=False):
+            for file_root, _, files in os.walk(root_path, topdown=False):
                 for name in files:
                     name, ext = name.split('.')
                     if ext != 'wav':
                         continue
-
                     relpath = os.path.relpath(file_root, root_path)
-                    name = os.path.join(relpath, name)
-                    names.append(name)
-
-            setattr(self, 'name_list', names)
-
-        names = getattr(self, 'name_list')
-
+                    names.append(os.path.join(relpath, name))
+            setattr(cls, 'name_list', names)
+        names = getattr(cls, 'name_list')
         if prefix:
-            names = list(filter(lambda s: s.startswith(prefix), names))
-
+            names = [s for s in names if s.startswith(prefix)]
         return names
 
     @classmethod
-    def get_path(self, name):
-        """
-        Get the absolute path of an audio sample file located in /samples
-        """
-        samples_path = self.root_dir()
-        file_path = os.path.join(samples_path, name + '.wav')
-
-        return file_path
+    def get_path(cls, name):
+        return os.path.join(cls.root_dir(), name + '.wav')
 
     @classmethod
-    def load(self, name):
-        """
-        Load a sample into a numpy array
-        """
-
-        if name in self.cache:
-            return self.cache[name]
-
+    def load(cls, name):
+        if name in cls.cache:
+            return cls.cache[name]
         import soundfile as sf
-        path = self.get_path(name)
+        path = cls.get_path(name)
         data, sr = sf.read(path)
         assert sr == 44100
-
-        # Mix down to mono if necessary
         if len(data.shape) == 2 and data.shape[1] == 2:
             data = 0.5 * (data[:, 0] + data[:, 1])
-
-        data = data.astype(np.float32)
-
-        self.cache[name] = data
-
-        return data
+        cls.cache[name] = data.astype(np.float32)
+        return cls.cache[name]
 
     @classmethod
-    def load_all(self, prefix=None):
-        """
-        Load all the samples into one NumPy array
-        Note that the total size of the array depends on the longest sample
-        """
-
-        sample_list = self.get_list(prefix)
-
-        samples = []
-
-        for name in sample_list:
-            data = self.load(name)
-            samples.append((name, data, data.shape[0]))
-
-        # Get the length of the longest sample
-        samples = sorted(samples, key=lambda e: e[-1])
-        num_samples = len(samples)
-        max_len = samples[-1][-1]
-
-        # Array to store the samples
-        arr = np.zeros(shape=(num_samples, max_len), dtype=np.float32)
-
-        for idx, (_, sample, smp_len) in enumerate(samples):
-            arr[idx, :smp_len] = sample
-
-        return arr
-
-    @classmethod
-    def random(self, num_samples, prefix=None):
+    def random(cls, num_samples, prefix=None):
         import random
-        samples = self.get_list(prefix)
-        names = random.sample(samples, num_samples)
-        return names
+        return random.sample(cls.get_list(prefix), num_samples)
+
 
 def mix_sample(audio, sample, start_idx):
-    """
-    Mix an audio sample into an audio buffer in-place
-    """
-
     smp_len = sample.shape[0]
-
     end_idx = start_idx + smp_len
     if end_idx > audio.shape[-1]:
         end_idx = audio.shape[-1]
+    if start_idx < 0:
+        sample = sample[-start_idx:]
+        start_idx = 0
+    smp_len = min(sample.shape[0], end_idx - start_idx)
+    audio[start_idx:end_idx] += sample[:smp_len]
 
-    smp_len = end_idx - start_idx
-
-    audio[start_idx:end_idx] = audio[start_idx:end_idx] + sample[:smp_len]
 
 ##############################################################################
+
 
 def new_pattern(fotf):
     samples = SampleManager.random(4)
-
     if fotf:
         samples[0] = SampleManager.random(1, 'drumhits/Kick')[0]
+    return Pattern(16, samples)
 
-    pat = Pattern(16, samples)
-    return pat
 
-def random_pattern(p=0.5, fotf=False):
+def random_pattern(p=0.5, fotf=False, groove=GROOVE_ADVANCED_STRAIGHT):
     pat = new_pattern(fotf)
     pat.randomize(p)
-
-    # Force 4 on the floor pattern for first sample
     if fotf:
         for i in range(pat.num_steps):
-            pat.set(0, i, i % 4 == 0)
+            pat.set(0, i, 1.0 if i % 4 == 0 else 0.0)
+    return pat, pat.render(groove=groove)
 
-    audio = pat.render()
-    return pat, audio
 
 def mutate_pattern(pat, fotf=False):
-    """
-    Mutate a pattern, while optionally preserving 4-on-the-floor structure
-    """
-
-    new_pattern = pat.copy()
-    new_pattern.mutate()
-    new_pattern.mutate_samples()
-
+    new_pat = pat.copy()
+    new_pat.mutate()
+    new_pat.mutate_samples()
     if fotf:
-        # Make sure the top row pattern remains 4oft
-        for i in range(new_pattern.num_steps):
-            new_pattern.set(0, i, i % 4 == 0)
+        for i in range(new_pat.num_steps):
+            new_pat.set(0, i, 1.0 if i % 4 == 0 else 0.0)
+        if new_pat.instr_names[0] != pat.instr_names[0]:
+            new_pat.instr_names[0] = SampleManager.random(1, 'drumhits/Kick')[0]
+    return new_pat
 
-        # Make sure the first sample remains a kick
-        if new_pattern.instr_names[0] != pat.instr_names[0]:
-            new_pattern.instr_names[0] = SampleManager.random(1, 'drumhits/Kick')[0]
 
-    return new_pattern
-
-##############################################################################
-
-def sample_prior(model, fotf, target_score=1.0, num_itrs=50):
-    """
-    Sample audio using a structured pattern generation prior
-    """
-
-    best_pattern = None
-    best_audio = None
-    best_p_good = None
-    best_dist = math.inf
-
-    for i in range(num_itrs):
-        print(i)
-        pat, audio = gen_prior(fotf)
-        p_good = model.eval_audio(audio)
-        dist = abs(target_score - p_good)
-
-        if dist <= best_dist:
-            best_pattern = pat
-            best_audio = audio
-            best_p_good = p_good
-            best_dist = dist
-
-    return best_pattern, best_audio, best_p_good
-
-def sample_metro(model, fotf, min_itrs=100, max_itrs=500, min_p=0, verbose=False):
-    """
-    Sample from a distribution using the Metropolis-Hastings algorithm
-    """
-
-    cur_pattern, cur_audio = random_pattern(fotf)
-    cur_p = model.eval_audio(cur_audio)
-
-    for i in range(max_itrs):
-        new_pattern = mutate_pattern(cur_pattern, fotf=fotf)
-        new_audio = new_pattern.render()
-        new_p = model.eval_audio(new_audio)
-
-        a = new_p / cur_p
-
-        if a >= 1 or np.random.uniform(0, 1) < a:
-            if verbose:
-                print(i, new_p)
-            cur_pattern = new_pattern
-            cur_audio = new_audio
-            cur_p = new_p
-
-        if i+1 >= min_itrs and cur_p > min_p:
-            break
-
-    return cur_pattern, cur_audio, cur_p
-
-def hillclimb(model, fotf, target_score=1.0, target_dist=0.05, min_itrs=100, max_itrs=500, verbose=False):
-    """
-    Try maximizing fitness through greedy hill-climbing
-    """
-
-    best_pattern, best_audio = random_pattern(fotf)
-    best_p_good = None
-    best_dist = math.inf
-
+def hillclimb(model, fotf, target_score=1.0, target_dist=0.05, min_itrs=100,
+              max_itrs=500, verbose=False, groove=GROOVE_ADVANCED_STRAIGHT):
+    best_pattern, best_audio = random_pattern(fotf=fotf, groove=groove)
+    best_p_good = model.eval_audio(best_audio)
+    best_dist = abs(target_score - best_p_good)
     for i in range(max_itrs):
         new_pattern = mutate_pattern(best_pattern, fotf=fotf)
-        audio = new_pattern.render()
+        audio = new_pattern.render(groove=groove)
         p_good = model.eval_audio(audio)
         dist = abs(target_score - p_good)
-
         if dist <= best_dist:
             if verbose:
                 print(i, p_good)
-            best_pattern = new_pattern
-            best_audio = audio
-            best_p_good = p_good
-            best_dist = dist
-
+            best_pattern, best_audio, best_p_good, best_dist = (
+                new_pattern, audio, p_good, dist)
             if i >= min_itrs and best_dist <= target_dist:
                 break
-
     return best_pattern, best_audio, best_p_good
