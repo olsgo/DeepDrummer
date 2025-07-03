@@ -16,7 +16,22 @@ def categorize_sample(sample_name):
         return 'tom'
     if 'cym' in name or 'crash' in name or 'ride' in name:
         return 'cymbal'
-    return 'perc'
+    return 'perc'  # Default to general percussion
+
+
+def apply_velocity_decay(sample, velocity, instrument_category):
+    """Apply an exponential decay envelope based on the note velocity."""
+    # Short percussive sounds like kicks or snares usually do not need extra
+    # decay shaping, so leave them unchanged.
+    if instrument_category in ["kick", "snare"]:
+        return sample
+
+    # Lower velocities should result in shorter sounds. We square the inverse
+    # velocity so that soft hits decay much faster than loud ones.
+    decay_strength = 5.0 * (1.0 - velocity) ** 2
+    envelope = np.exp(-np.linspace(0.0, decay_strength, num=len(sample)))
+
+    return sample * envelope
 
 
 class AdvancedGrooveProfile:
@@ -118,7 +133,7 @@ class Pattern:
 
     def render(self, num_repeats=4, bpm=120, sr=44100, pad_len=1,
                mix_vol=0.5, groove=GROOVE_ADVANCED_STRAIGHT):
-        """Render the pattern with instrument-specific groove adjustments."""
+        """Render the pattern applying groove and velocity-based decay."""
         samples = [SampleManager.load(name) for name in self.instr_names]
         instrument_categories = [categorize_sample(name) for name in self.instr_names]
 
@@ -145,7 +160,12 @@ class Pattern:
 
                     start_idx = base_start_idx + int(timing_offset_ms / 1000 * sr)
                     final_velocity = np.clip(base_velocity * velocity_multiplier, 0.0, 1.0)
-                    sample_to_mix = samples[instr_idx] * mix_vol * final_velocity
+
+                    # Apply velocity-based decay before adjusting final volume.
+                    base_sample = samples[instr_idx]
+                    decayed_sample = apply_velocity_decay(base_sample, final_velocity, category)
+
+                    sample_to_mix = decayed_sample * mix_vol * final_velocity
                     mix_sample(audio, sample_to_mix, start_idx)
 
         return audio
